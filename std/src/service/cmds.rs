@@ -84,6 +84,7 @@ other people's drives with the MOUNT command.",
         let mut data = HashMap::new();
         loop {
             let request = LoginRequest { data: data.clone() };
+            // TODO: Printout slow logins.
             let result = self.service.borrow_mut().login(&access_token, &request).await;
             match result {
                 Ok(Ok(response)) => {
