@@ -43,6 +43,9 @@ or web browser.  If you do resize them, however, restart the interpreter.
 Graphics are currently not supported but they are within the realm of possibility for a later \
 version.";
 
+/// Character to print when typing a secure string.
+const SECURE_CHAR: u8 = b'*';
+
 /// Decoded key presses as returned by the console.
 #[derive(Clone, Debug)]
 pub enum Key {
@@ -175,11 +178,16 @@ async fn read_line_interactive(
     console: &mut dyn Console,
     prompt: &str,
     previous: &str,
+    echo: bool,
 ) -> io::Result<String> {
     let mut line = String::from(previous);
     console.clear(ClearType::UntilNewLine)?;
     if !prompt.is_empty() || !line.is_empty() {
-        console.write(format!("{}{}", prompt, line).as_bytes())?;
+        if echo {
+            console.write(format!("{}{}", prompt, line).as_bytes())?;
+        } else {
+            console.write(format!("{}{}", prompt, "*".repeat(line.len())).as_bytes())?;
+        }
     }
 
     let width = {
@@ -216,7 +224,11 @@ async fn read_line_interactive(
                 if pos > 0 {
                     console.hide_cursor()?;
                     console.move_within_line(-1)?;
-                    console.write(line[pos..].as_bytes())?;
+                    if echo {
+                        console.write(line[pos..].as_bytes())?;
+                    } else {
+                        console.write(&vec![SECURE_CHAR; line.len() - pos])?;
+                    }
                     console.write(&[b' '])?;
                     console.move_within_line(-((line.len() - pos) as i16 + 1))?;
                     console.show_cursor()?;
@@ -246,12 +258,20 @@ async fn read_line_interactive(
 
                 if pos < line.len() {
                     console.hide_cursor()?;
-                    console.write(&[ch as u8])?;
-                    console.write(line[pos..].as_bytes())?;
+                    if echo {
+                        console.write(&[ch as u8])?;
+                        console.write(line[pos..].as_bytes())?;
+                    } else {
+                        console.write(&vec![SECURE_CHAR; line.len() - pos + 1])?;
+                    }
                     console.move_within_line(-((line.len() - pos) as i16))?;
                     console.show_cursor()?;
                 } else {
-                    console.write(&[ch as u8])?;
+                    if echo {
+                        console.write(&[ch as u8])?;
+                    } else {
+                        console.write(&[SECURE_CHAR])?;
+                    }
                 }
                 line.insert(pos, ch);
                 pos += 1;
@@ -316,10 +336,27 @@ pub async fn read_line(
     previous: &str,
 ) -> io::Result<String> {
     if console.is_interactive() {
-        read_line_interactive(console, prompt, previous).await
+        read_line_interactive(console, prompt, previous, true).await
     } else {
         read_line_raw(console).await
     }
+}
+
+/// Reads a line from the console without echo using the given `prompt`.
+///
+/// The console must be interactive for this to work, as otherwise we do not have a mechanism to
+/// suppress echo.
+pub(crate) async fn read_line_secure(
+    console: &mut dyn Console,
+    prompt: &str,
+) -> io::Result<String> {
+    if !console.is_interactive() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Cannot read secure strings from a raw console".to_owned(),
+        ));
+    }
+    read_line_interactive(console, prompt, "", false).await
 }
 
 /// The `CLS` command.
@@ -647,6 +684,7 @@ mod tests {
         keys: Vec<Key>,
         prompt: &'static str,
         previous: &'static str,
+        echo: bool,
         exp_line: &'static str,
         exp_output: Vec<CapturedOut>,
     }
@@ -659,6 +697,7 @@ mod tests {
                 keys: vec![],
                 prompt: "",
                 previous: "",
+                echo: true,
                 exp_line: "",
                 exp_output: vec![CapturedOut::Clear(ClearType::UntilNewLine)],
             }
@@ -716,6 +755,12 @@ mod tests {
             self
         }
 
+        /// Sets whether read_line echoes characters or not.
+        fn set_echo(mut self, echo: bool) -> Self {
+            self.echo = echo;
+            self
+        }
+
         /// Adds a final return key to the golden input, a newline to the expected output, and
         /// executes the test.
         fn accept(mut self) {
@@ -725,8 +770,13 @@ mod tests {
             let mut console = MockConsole::default();
             console.add_input_keys(&self.keys);
             console.set_size(Position { row: 5, column: 15 });
-            let line =
-                block_on(read_line_interactive(&mut console, self.prompt, self.previous)).unwrap();
+            let line = block_on(read_line_interactive(
+                &mut console,
+                self.prompt,
+                self.previous,
+                self.echo,
+            ))
+            .unwrap();
             assert_eq!(self.exp_line, &line);
             assert_eq!(self.exp_output.as_slice(), console.captured_out());
         }
@@ -956,6 +1006,68 @@ mod tests {
             // -
             .set_line("not affected")
             .accept();
+    }
+
+    #[test]
+    fn test_read_line_without_echo() {
+        ReadLineInteractiveTest::default()
+            .set_echo(false)
+            .set_prompt("> ")
+            .set_previous("pass1234")
+            .add_output(CapturedOut::Write(b"> ********".to_vec()))
+            // -
+            .add_key_chars("56")
+            .add_output_bytes(b"**")
+            // -
+            .add_key(Key::ArrowLeft)
+            .add_output(CapturedOut::MoveWithinLine(-1))
+            // -
+            .add_key(Key::ArrowLeft)
+            .add_output(CapturedOut::MoveWithinLine(-1))
+            // -
+            .add_key(Key::Backspace)
+            .add_output(CapturedOut::HideCursor)
+            .add_output(CapturedOut::MoveWithinLine(-1))
+            .add_output(CapturedOut::Write(b"**".to_vec()))
+            .add_output_bytes(b" ")
+            .add_output(CapturedOut::MoveWithinLine(-3))
+            .add_output(CapturedOut::ShowCursor)
+            // -
+            .add_output(CapturedOut::HideCursor)
+            .add_key_chars("7")
+            .add_output(CapturedOut::Write(b"***".to_vec()))
+            .add_output(CapturedOut::MoveWithinLine(-2))
+            .add_output(CapturedOut::ShowCursor)
+            // -
+            .set_line("pass123756")
+            .accept();
+    }
+
+    #[test]
+    fn test_read_line_secure_trivial_test() {
+        let mut console = MockConsole::default();
+        console.set_interactive(true);
+        console.add_input_keys(&[Key::Char('1'), Key::Char('5'), Key::NewLine]);
+        console.set_size(Position { row: 5, column: 15 });
+        let line = block_on(read_line_secure(&mut console, "> ")).unwrap();
+        assert_eq!("15", &line);
+        assert_eq!(
+            &[
+                CapturedOut::Clear(ClearType::UntilNewLine),
+                CapturedOut::Write(vec![b'>', b' ']),
+                CapturedOut::Write(vec![b'*']),
+                CapturedOut::Write(vec![b'*']),
+                CapturedOut::Write(vec![b'\r', b'\n']),
+            ],
+            console.captured_out()
+        );
+    }
+
+    #[test]
+    fn test_read_line_secure_unsupported_in_noninteractive_console() {
+        let mut console = MockConsole::default();
+        let err = block_on(read_line_secure(&mut console, "> ")).unwrap_err();
+        assert!(format!("{}", err).contains("Cannot read secure"));
     }
 
     #[test]
