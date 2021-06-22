@@ -43,7 +43,7 @@ not intend to be fully compatible with them.  The library currently contains:
 *   File system interaction: `CD`, `DIR`, `MOUNT`, `PWD`, `UNMOUNT`.
 *   Interpreter interaction: `CLEAR`, `EXIT`, `HELP`.
 *   Numerics: `DTOI`, `ITOD`, `RANDOMIZE`, `RND`.
-*   Program manipulation: ``DEL`, `EDIT`, `LIST`, `LOAD`,`NEW`, `RUN`, `SAVE`.
+*   Program manipulation: `DEL`, `EDIT`, `LIST`, `LOAD`,`NEW`, `RUN`, `SAVE`.
 *   Strings: `LEFT`, `LEN`, `LTRIM`, `MID`, `RIGHT`, `RTRIM`.
 
 ## Design principles
